@@ -6,7 +6,6 @@ import torch
 from torch import Tensor, eye, nn, ones, optim
 from torch.distributions import Distribution
 from torch.nn.utils.clip_grad import clip_grad_norm_
-from torch.utils import data
 from torch.utils.tensorboard.writer import SummaryWriter
 
 from sbi import utils as utils
@@ -38,13 +37,19 @@ class RatioEstimator(NeuralInference, ABC):
     ):
         r"""Sequential Neural Ratio Estimation.
 
-        We implement two inference methods in the respective subclasses.
+        We implement three inference methods in the respective subclasses.
 
         - SNRE_A / AALR is limited to `num_atoms=2`, but allows for density evaluation
           when training for one round.
         - SNRE_B / SRE can use more than two atoms, potentially boosting performance,
           but allows for posterior evaluation **only up to a normalizing constant**,
           even when training only one round.
+        - BNRE is a variation of SNRE_A aiming to produce more conservative posterior approximations.
+        - SNRE_C / NRE-C is a generalization of SNRE_A and SNRE_B which can use multiple
+          classes (similar to atoms) but encourages an exact likelihood-to-evidence
+          ratio (density evaluation) by introducing an independently drawn class.
+          Addressing the issue in SNRE_B which only estimates the ratio up to a function
+          (normalizing constant) of the data $x$.
 
         Args:
             classifier: Classifier trained to approximate likelihood ratios. If it is
@@ -151,6 +156,7 @@ class RatioEstimator(NeuralInference, ABC):
         retrain_from_scratch: bool = False,
         show_train_summary: bool = False,
         dataloader_kwargs: Optional[Dict] = None,
+        loss_kwargs: Dict[str, Any] = {},
     ) -> nn.Module:
         r"""Return classifier that approximates the ratio $p(\theta,x)/p(\theta)p(x)$.
 
@@ -169,6 +175,7 @@ class RatioEstimator(NeuralInference, ABC):
                 estimator for the posterior from scratch each round.
             dataloader_kwargs: Additional or updated kwargs to be passed to the training
                 and validation dataloaders (like, e.g., a collate_fn).
+            loss_kwargs: Additional or updated kwargs to be passed to the self._loss fn.
 
         Returns:
             Classifier that approximates the ratio $p(\theta,x)/p(\theta)p(x)$.
@@ -233,7 +240,9 @@ class RatioEstimator(NeuralInference, ABC):
                     batch[1].to(self._device),
                 )
 
-                train_losses = self._loss(theta_batch, x_batch, num_atoms)
+                train_losses = self._loss(
+                    theta_batch, x_batch, num_atoms, **loss_kwargs
+                )
                 train_loss = torch.mean(train_losses)
                 train_log_probs_sum -= train_losses.sum().item()
 
@@ -261,7 +270,9 @@ class RatioEstimator(NeuralInference, ABC):
                         batch[0].to(self._device),
                         batch[1].to(self._device),
                     )
-                    val_losses = self._loss(theta_batch, x_batch, num_atoms)
+                    val_losses = self._loss(
+                        theta_batch, x_batch, num_atoms, **loss_kwargs
+                    )
                     val_log_prob_sum -= val_losses.sum().item()
                 # Take mean over all validation samples.
                 self._val_log_prob = val_log_prob_sum / (

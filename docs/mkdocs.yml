@@ -27,7 +27,9 @@ nav:
         - Posterior sensitivity analysis: tutorial/09_sensitivity_analysis.md
       - Examples:
         - Hodgkin-Huxley example: examples/00_HH_simulator.md
-  - Contribute: contribute.md
+  - Contributing: 
+    - Guide: contribute.md
+    - Code of Conduct: code_of_conduct.md
   - API Reference: reference.md
   - FAQ: faq.md
   - Credits: credits.md
@@ -86,8 +88,9 @@ plugins:
           rendering:
             show_source: true
             heading_level: 3
-      watch:
-        - ../sbi
+  
+watch:
+  - ../sbi
 
 extra_javascript:
   - 'https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.0/MathJax.js?config=TeX-MML-AM_CHTML'

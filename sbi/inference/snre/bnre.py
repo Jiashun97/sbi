@@ -1,15 +1,15 @@
 from typing import Callable, Dict, Optional, Union
 
 import torch
-from torch import Tensor, nn
+from torch import Tensor, nn, ones
 from torch.distributions import Distribution
 
-from sbi.inference.snre.snre_base import RatioEstimator
+from sbi.inference.snre.snre_a import SNRE_A
 from sbi.types import TensorboardSummaryWriter
 from sbi.utils import del_entries
 
 
-class SNRE_B(RatioEstimator):
+class BNRE(SNRE_A):
     def __init__(
         self,
         prior: Optional[Distribution] = None,
@@ -19,10 +19,14 @@ class SNRE_B(RatioEstimator):
         summary_writer: Optional[TensorboardSummaryWriter] = None,
         show_progress_bars: bool = True,
     ):
-        r"""SRE[1], here known as SNRE_B.
 
-        [1] _On Contrastive Learning for Likelihood-free Inference_, Durkan et al.,
-            ICML 2020, https://arxiv.org/pdf/2002.03712
+        r"""Balanced neural ratio estimation (BNRE)[1]. BNRE is a variation of NRE
+        aiming to produce more conservative posterior approximations
+
+        [1] Delaunoy, A., Hermans, J., Rozet, F., Wehenkel, A., & Louppe, G..
+        Towards Reliable Simulation-Based Inference with Balanced Neural Ratio
+        Estimation.
+        NeurIPS 2022. https://arxiv.org/abs/2208.13624
 
         Args:
             prior: A probability distribution that expresses prior knowledge about the
@@ -32,9 +36,9 @@ class SNRE_B(RatioEstimator):
                 a string, use a pre-configured network of the provided type (one of
                 linear, mlp, resnet). Alternatively, a function that builds a custom
                 neural network can be provided. The function will be called with the
-                first batch of simulations (theta, x), which can thus be used for shape
-                inference and potentially for z-scoring. It needs to return a PyTorch
-                `nn.Module` implementing the classifier.
+                first batch of simulations $(\theta, x)$, which can thus be used for
+                shape inference and potentially for z-scoring. It needs to return a
+                PyTorch `nn.Module` implementing the classifier.
             device: Training device, e.g., "cpu", "cuda" or "cuda:{0, 1, ...}".
             logging_level: Minimum severity of messages to log. One of the strings
                 INFO, WARNING, DEBUG, ERROR and CRITICAL.
@@ -49,7 +53,7 @@ class SNRE_B(RatioEstimator):
 
     def train(
         self,
-        num_atoms: int = 10,
+        regularization_strength: float = 100.0,
         training_batch_size: int = 50,
         learning_rate: float = 5e-4,
         validation_fraction: float = 0.1,
@@ -63,9 +67,10 @@ class SNRE_B(RatioEstimator):
         dataloader_kwargs: Optional[Dict] = None,
     ) -> nn.Module:
         r"""Return classifier that approximates the ratio $p(\theta,x)/p(\theta)p(x)$.
-
         Args:
-            num_atoms: Number of atoms to use for classification.
+
+            regularization_strength: The multiplicative coefficient applied to the
+                balancing regularizer ($\lambda$).
             training_batch_size: Training batch size.
             learning_rate: Learning rate for Adam optimizer.
             validation_fraction: The fraction of data to use for validation.
@@ -76,6 +81,8 @@ class SNRE_B(RatioEstimator):
                 we train until validation loss increases (see also `stop_after_epochs`).
             clip_max_norm: Value at which to clip the total gradient norm in order to
                 prevent exploding gradients. Use None for no clipping.
+            exclude_invalid_x: Whether to exclude simulation outputs `x=NaN` or `x=±∞`
+                during training. Expect errors, silent or explicit, when `False`.
             resume_training: Can be used in case training time is limited, e.g. on a
                 cluster. If `True`, the split between train and validation set, the
                 optimizer, the number of epochs, and the best validation log-prob will
@@ -89,34 +96,46 @@ class SNRE_B(RatioEstimator):
                 loss and leakage after the training.
             dataloader_kwargs: Additional or updated kwargs to be passed to the training
                 and validation dataloaders (like, e.g., a collate_fn)
-
         Returns:
             Classifier that approximates the ratio $p(\theta,x)/p(\theta)p(x)$.
         """
         kwargs = del_entries(locals(), entries=("self", "__class__"))
+        kwargs["loss_kwargs"] = {
+            "regularization_strength": kwargs.pop("regularization_strength")
+        }
         return super().train(**kwargs)
 
-    def _loss(self, theta: Tensor, x: Tensor, num_atoms: int) -> Tensor:
-        r"""Return cross-entropy (via softmax activation) loss for 1-out-of-`num_atoms`
-        classification.
+    def _loss(
+        self, theta: Tensor, x: Tensor, num_atoms: int, regularization_strength: float
+    ) -> Tensor:
+        """Returns the binary cross-entropy loss for the trained classifier.
 
-        The classifier takes as input `num_atoms` $(\theta,x)$ pairs. Out of these
-        pairs, one pair was sampled from the joint $p(\theta,x)$ and all others from the
-        marginals $p(\theta)p(x)$. The classifier is trained to predict which of the
-        pairs was sampled from the joint $p(\theta,x)$.
+        The classifier takes as input a $(\theta,x)$ pair. It is trained to predict 1
+        if the pair was sampled from the joint $p(\theta,x)$, and to predict 0 if the
+        pair was sampled from the marginals $p(\theta)p(x)$.
         """
 
         assert theta.shape[0] == x.shape[0], "Batch sizes for theta and x must match."
         batch_size = theta.shape[0]
+
         logits = self._classifier_logits(theta, x, num_atoms)
+        likelihood = torch.sigmoid(logits).squeeze()
 
-        # For 1-out-of-`num_atoms` classification each datapoint consists
-        # of `num_atoms` points, with one of them being the correct one.
-        # We have a batch of `batch_size` such datapoints.
-        logits = logits.reshape(batch_size, num_atoms)
+        # Alternating pairs where there is one sampled from the joint and one
+        # sampled from the marginals. The first element is sampled from the
+        # joint p(theta, x) and is labelled 1. The second element is sampled
+        # from the marginals p(theta)p(x) and is labelled 0. And so on.
+        labels = ones(2 * batch_size, device=self._device)  # two atoms
+        labels[1::2] = 0.0
 
-        # Index 0 is the theta-x-pair sampled from the joint p(theta,x) and hence the
-        # "correct" one for the 1-out-of-N classification.
-        log_prob = logits[:, 0] - torch.logsumexp(logits, dim=-1)
+        # Binary cross entropy to learn the likelihood (AALR-specific)
+        bce = nn.BCELoss()(likelihood, labels)
 
-        return -torch.mean(log_prob)
+        # Balancing regularizer
+        regularizer = (
+            (torch.sigmoid(logits[0::2]) + torch.sigmoid(logits[1::2]) - 1)
+            .mean()
+            .square()
+        )
+
+        return bce + regularization_strength * regularizer
