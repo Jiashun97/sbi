@@ -184,13 +184,13 @@ def build_nsf(
     batch_y: Tensor,
     z_score_x: Optional[str] = "independent",
     z_score_y: Optional[str] = "independent",
-    hidden_features: int = 50,
+    hidden_features: int = 1000,# 50
     num_transforms: int = 5,
     num_bins: int = 10,
     embedding_net: nn.Module = nn.Identity(),
     tail_bound: float = 3.0,
-    hidden_layers_spline_context: int = 1,
-    num_blocks: int = 2,
+    hidden_layers_spline_context: int = 1, #1
+    num_blocks: int = 5, # 2
     dropout_probability: float = 0.0,
     use_batch_norm: bool = False,
     **kwargs,
