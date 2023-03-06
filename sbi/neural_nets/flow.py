@@ -189,7 +189,7 @@ def build_nsf(
     num_bins: int = 10,
     embedding_net: nn.Module = nn.Identity(),
     tail_bound: float = 3.0,
-    hidden_layers_spline_context: int = 3, #1
+    hidden_layers_spline_context: int = 5, #1
     num_blocks: int = 5, # 2
     dropout_probability: float = 0.0,
     use_batch_norm: bool = False,
