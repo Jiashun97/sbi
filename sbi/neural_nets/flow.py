@@ -184,7 +184,7 @@ def build_nsf(
     batch_y: Tensor,
     z_score_x: Optional[str] = "independent",
     z_score_y: Optional[str] = "independent",
-    hidden_features: int = 1000,# 50
+    hidden_features: int = 100,# 50
     num_transforms: int = 5, # 5
     num_bins: int = 100, # 10
     embedding_net: nn.Module = nn.Identity(),
