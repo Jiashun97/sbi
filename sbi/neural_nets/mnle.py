@@ -112,8 +112,8 @@ class CategoricalNet(nn.Module):
         self,
         num_input: int = 4, #4   6
         num_categories: int = 2, #2   3
-        num_hidden: int = 100,#20
-        num_layers: int = 5, #2
+        num_hidden: int = 1000,#20
+        num_layers: int = 3, #2
         embedding: Optional[nn.Module] = None,
     ):
         """Initialize the neural net.
